@@ -1,0 +1,122 @@
+name: Build Berserk Kernel
+
+on:
+  schedule:
+    - cron: "0 6 * * *" # daily at 06:00 UTC
+  workflow_dispatch:
+
+jobs:
+  check-and-build:
+    runs-on: self-hosted
+
+    steps:
+      - name: Checkout source repo
+        uses: actions/checkout@v4
+        with:
+          repository: thehackersbrain/berserk-kernel
+          token: ${{ secrets.BERSERK_KERNEL_PAT }}
+          path: source
+
+      - name: Check upstream version
+        id: check
+        run: |
+          API=$(curl -s https://archlinux.org/packages/core/x86_64/linux/json/)
+          PKGVER=$(echo "$API" | jq -r '.pkgver')
+          PKGREL=$(echo "$API" | jq -r '.pkgrel')
+          UPSTREAM="${PKGVER}-${PKGREL}"
+          CURVER=$(awk -F= '/^pkgver=/{print $2; exit}' source/PKGBUILD)
+          CURREL=$(awk -F= '/^pkgrel=/{print $2; exit}' source/PKGBUILD)
+          CURRENT="${CURVER}-${CURREL}"
+          echo "upstream=$UPSTREAM" >> $GITHUB_OUTPUT
+          echo "pkgver=$PKGVER"     >> $GITHUB_OUTPUT
+          echo "pkgrel=$PKGREL"     >> $GITHUB_OUTPUT
+          if [ "$UPSTREAM" != "$CURRENT" ]; then
+            echo "changed=true" >> $GITHUB_OUTPUT
+          else
+            echo "changed=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Checkout mirror repo
+        if: steps.check.outputs.changed == 'true'
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          path: mirror
+
+      - name: Update PKGBUILD
+        if: steps.check.outputs.changed == 'true'
+        working-directory: source
+        run: |
+          sed -i "s/^pkgver=.*/pkgver=${{ steps.check.outputs.pkgver }}/" PKGBUILD
+          sed -i "s/^pkgrel=.*/pkgrel=${{ steps.check.outputs.pkgrel }}/" PKGBUILD
+          updpkgsums
+
+      - name: Build in Docker
+        if: steps.check.outputs.changed == 'true'
+        run: |
+          # clean stale packages from previous builds
+          rm -f source/*.pkg.tar.zst source/*.pkg.tar.zst.sig
+          docker run --rm \
+            -v "$PWD/source":/build \
+            berserkarch/berserkarch:base-devel \
+            bash -c "
+              useradd -m builder && \
+              chown -R builder /build && \
+              cd /build && \
+              su builder -c 'makepkg -s --noconfirm --skippgpcheck --cleanbuild'
+            "
+
+      - name: Sign packages
+        if: steps.check.outputs.changed == 'true'
+        env:
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          for pkg in source/*.pkg.tar.zst; do
+            echo "$GPG_PASSPHRASE" | \
+            gpg --batch --yes \
+                --passphrase-fd 0 \
+                --pinentry-mode loopback \
+                --detach-sign --no-armor \
+                --default-key E5B40954BD3C98D9BB0F70C805DB3DDFA247469A \
+                "$pkg"
+          done
+
+      - name: Update pacman repo database
+        if: steps.check.outputs.changed == 'true'
+        env:
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          # pre-cache passphrase in gpg-agent so make doesn't prompt
+          echo "$GPG_PASSPHRASE" | \
+          gpg --batch --yes \
+              --passphrase-fd 0 \
+              --pinentry-mode loopback \
+              -u E5B40954BD3C98D9BB0F70C805DB3DDFA247469A \
+              --sign /dev/null
+
+          # wipe old packages in mirror, copy fresh ones
+          rm -f mirror/x86_64/*.pkg.tar.zst mirror/x86_64/*.pkg.tar.zst.sig
+          cp source/*.pkg.tar.zst source/*.pkg.tar.zst.sig mirror/x86_64/
+
+          # build the repo db via the Makefile
+          make -C mirror/x86_64
+
+      - name: Commit and push mirror
+        if: steps.check.outputs.changed == 'true'
+        working-directory: mirror
+        run: |
+          git config user.name  "berserk-bot"
+          git config user.email "bot@berserkarch.org"
+          git add x86_64/
+          git commit -m "chore: bump to ${{ steps.check.outputs.upstream }}"
+          git push
+
+      - name: Commit and push source
+        if: steps.check.outputs.changed == 'true'
+        working-directory: source
+        run: |
+          git config user.name  "berserk-bot"
+          git config user.email "bot@berserkarch.org"
+          git add PKGBUILD
+          git commit -m "chore: bump to ${{ steps.check.outputs.upstream }}"
+          git push
