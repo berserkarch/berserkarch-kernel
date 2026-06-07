@@ -1,0 +1,47 @@
+name: Test Clone and Push
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout source repo
+        uses: actions/checkout@v4
+        with:
+          repository: thehackersbrain/berserk-kernel
+          token: ${{ secrets.BERSERK_KERNEL_PAT }}
+          path: source
+
+      - name: Checkout mirror repo
+        uses: actions/checkout@v4
+        with:
+          repository: berserkarch/berserkarch-kernel
+          token: ${{ secrets.BERSERK_KERNEL_PAT }}
+          path: mirror
+
+      - name: Test push to source
+        working-directory: source
+        run: |
+          git config user.name  "berserk-bot"
+          git config user.email "bot@berserkarch.org"
+          echo "test-$(date +%s)" > .ci-test
+          git add .ci-test
+          git commit -m "ci: test push"
+          git push
+          git revert HEAD --no-edit
+          git push
+
+      - name: Test push to mirror
+        working-directory: mirror
+        run: |
+          git config user.name  "berserk-bot"
+          git config user.email "bot@berserkarch.org"
+          echo "test-$(date +%s)" > .ci-test
+          git add .ci-test
+          git commit -m "ci: test push"
+          git push
+          git revert HEAD --no-edit
+          git push

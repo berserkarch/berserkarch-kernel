@@ -53,7 +53,7 @@ jobs:
         if: steps.check.outputs.changed == 'true'
         uses: actions/checkout@v4
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.BERSERK_KERNEL_PAT }}
           path: mirror
 
       - name: Import GPG key
