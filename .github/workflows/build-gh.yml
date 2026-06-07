@@ -98,7 +98,7 @@ jobs:
             berserkarch/berserkarch:base-devel \
             bash -c "
               pacman -Syyu --noconfirm && \
-              pacman -S --noconfirm --needed ccache && \
+              pacman -S --noconfirm --needed ccache pacman-contrib && \
               useradd -m builder && \
               echo 'builder ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/builder && \
               chown -R builder /build /home/builder/.ccache && \
