@@ -93,27 +93,39 @@ jobs:
           restore-keys: |
             ccache-kernel-
 
-      - name: Build in Docker
+      # - name: Build in Docker
+      #   if: steps.check.outputs.changed == 'true'
+      #   run: |
+      #     rm -f source/*.pkg.tar.zst source/*.pkg.tar.zst.sig
+      #     mkdir -p $HOME/.cache/ccache
+      #     docker run --rm \
+      #       -v "$PWD/source":/build \
+      #       -v "$HOME/.cache/ccache":/home/builder/.ccache \
+      #       berserkarch/berserkarch:base-devel \
+      #       bash -c "
+      #         pacman -Syyu --noconfirm && \
+      #         pacman -S --noconfirm --needed ccache pacman-contrib && \
+      #         useradd -m builder && \
+      #         echo 'builder ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/builder && \
+      #         chown -R builder /build /home/builder/.ccache && \
+      #         cd /build && \
+      #         su builder -c 'export CCACHE_DIR=/home/builder/.ccache && \
+      #                        export PATH=/usr/lib/ccache/bin:\$PATH && \
+      #                        updpkgsums && \
+      #                        makepkg -s --noconfirm --skippgpcheck --cleanbuild'
+      #       "
+
+      - name: Create dummy packages for testing
         if: steps.check.outputs.changed == 'true'
         run: |
-          rm -f source/*.pkg.tar.zst source/*.pkg.tar.zst.sig
-          mkdir -p $HOME/.cache/ccache
-          docker run --rm \
-            -v "$PWD/source":/build \
-            -v "$HOME/.cache/ccache":/home/builder/.ccache \
-            berserkarch/berserkarch:base-devel \
-            bash -c "
-              pacman -Syyu --noconfirm && \
-              pacman -S --noconfirm --needed ccache pacman-contrib && \
-              useradd -m builder && \
-              echo 'builder ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/builder && \
-              chown -R builder /build /home/builder/.ccache && \
-              cd /build && \
-              su builder -c 'export CCACHE_DIR=/home/builder/.ccache && \
-                             export PATH=/usr/lib/ccache/bin:\$PATH && \
-                             updpkgsums && \
-                             makepkg -s --noconfirm --skippgpcheck --cleanbuild'
-            "
+          mkdir -p source
+          for pkg in berserk-kernel berserk-kernel-headers berserk-kernel-docs; do
+            dd if=/dev/urandom bs=1M count=1 2>/dev/null | zstd -o               "source/${pkg}-${{ steps.check.outputs.pkgver }}-${{ steps.check.outputs.pkgrel }}-x86_64.pkg.tar.zst"
+          done
+
+      - name: Fix package ownership
+        if: steps.check.outputs.changed == 'true'
+        run: sudo chown -R $USER:$USER source/
 
       - name: Sign packages
         if: steps.check.outputs.changed == 'true'
