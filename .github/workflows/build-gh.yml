@@ -53,6 +53,7 @@ jobs:
         if: steps.check.outputs.changed == 'true'
         uses: actions/checkout@v4
         with:
+          repository: "berserkarch/berserkarch-kernel"
           token: ${{ secrets.BERSERK_KERNEL_PAT }}
           path: mirror
 
