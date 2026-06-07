@@ -146,6 +146,7 @@ jobs:
         if: steps.check.outputs.changed == 'true'
         env:
           GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+          GPG_SIGNING_KEY: ${{ secrets.GPG_SIGNING_KEY }}
         run: |
           rm -f mirror/x86_64/*.pkg.tar.zst mirror/x86_64/*.pkg.tar.zst.sig
           cp source/*.pkg.tar.zst source/*.pkg.tar.zst.sig mirror/x86_64/
