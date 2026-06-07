@@ -1,0 +1,152 @@
+name: Build Berserk Kernel (GitHub Hosted)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  check-and-build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force
+          df -h
+
+      - name: Checkout source repo
+        uses: actions/checkout@v4
+        with:
+          repository: thehackersbrain/berserk-kernel
+          token: ${{ secrets.BERSERK_KERNEL_PAT }}
+          path: source
+
+      - name: Check upstream version
+        id: check
+        run: |
+          API=$(curl -s https://archlinux.org/packages/core/x86_64/linux/json/)
+          PKGVER=$(echo "$API" | jq -r '.pkgver')
+          PKGREL=$(echo "$API" | jq -r '.pkgrel')
+          UPSTREAM="${PKGVER}-${PKGREL}"
+          CURVER=$(awk -F= '/^pkgver=/{print $2; exit}' source/PKGBUILD)
+          CURREL=$(awk -F= '/^pkgrel=/{print $2; exit}' source/PKGBUILD)
+          CURRENT="${CURVER}-${CURREL}"
+          echo "upstream=$UPSTREAM" >> $GITHUB_OUTPUT
+          echo "pkgver=$PKGVER"     >> $GITHUB_OUTPUT
+          echo "pkgrel=$PKGREL"     >> $GITHUB_OUTPUT
+          if [ "$UPSTREAM" != "$CURRENT" ]; then
+            echo "changed=true" >> $GITHUB_OUTPUT
+          else
+            echo "changed=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Checkout mirror repo
+        if: steps.check.outputs.changed == 'true'
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          path: mirror
+
+      - name: Import GPG key
+        if: steps.check.outputs.changed == 'true'
+        env:
+          GPG_SIGNING_KEY: ${{ secrets.GPG_SIGNING_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          echo "$GPG_SIGNING_KEY" | base64 --decode | \
+          gpg --batch --yes \
+              --passphrase "$GPG_PASSPHRASE" \
+              --pinentry-mode loopback \
+              --import
+          # pre-cache passphrase in agent
+          echo "$GPG_PASSPHRASE" | \
+          gpg --batch --yes \
+              --passphrase-fd 0 \
+              --pinentry-mode loopback \
+              -u E5B40954BD3C98D9BB0F70C805DB3DDFA247469A \
+              --sign /dev/null
+
+      - name: Update PKGBUILD
+        if: steps.check.outputs.changed == 'true'
+        working-directory: source
+        run: |
+          sed -i "s/^pkgver=.*/pkgver=${{ steps.check.outputs.pkgver }}/" PKGBUILD
+          sed -i "s/^pkgrel=.*/pkgrel=${{ steps.check.outputs.pkgrel }}/" PKGBUILD
+          updpkgsums
+
+      - name: Restore ccache
+        if: steps.check.outputs.changed == 'true'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: ccache-kernel-${{ steps.check.outputs.pkgver }}
+          restore-keys: |
+            ccache-kernel-
+
+      - name: Build in Docker
+        if: steps.check.outputs.changed == 'true'
+        run: |
+          rm -f source/*.pkg.tar.zst source/*.pkg.tar.zst.sig
+          mkdir -p $HOME/.cache/ccache
+          docker run --rm \
+            -v "$PWD/source":/build \
+            -v "$HOME/.cache/ccache":/home/builder/.ccache \
+            berserkarch/berserkarch:base-devel \
+            bash -c "
+              pacman -Syyu --noconfirm && \
+              pacman -S --noconfirm --needed ccache && \
+              useradd -m builder && \
+              echo 'builder ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/builder && \
+              chown -R builder /build /home/builder/.ccache && \
+              cd /build && \
+              su builder -c 'export CCACHE_DIR=/home/builder/.ccache && \
+                             export PATH=/usr/lib/ccache/bin:\$PATH && \
+                             makepkg -s --noconfirm --skippgpcheck --cleanbuild'
+            "
+
+      - name: Sign packages
+        if: steps.check.outputs.changed == 'true'
+        env:
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          for pkg in source/*.pkg.tar.zst; do
+            echo "$GPG_PASSPHRASE" | \
+            gpg --batch --yes \
+                --passphrase-fd 0 \
+                --pinentry-mode loopback \
+                --detach-sign --no-armor \
+                --default-key E5B40954BD3C98D9BB0F70C805DB3DDFA247469A \
+                "$pkg"
+          done
+
+      - name: Update pacman repo database
+        if: steps.check.outputs.changed == 'true'
+        env:
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          rm -f mirror/x86_64/*.pkg.tar.zst mirror/x86_64/*.pkg.tar.zst.sig
+          cp source/*.pkg.tar.zst source/*.pkg.tar.zst.sig mirror/x86_64/
+          make -C mirror/x86_64
+
+      - name: Commit and push mirror
+        if: steps.check.outputs.changed == 'true'
+        working-directory: mirror
+        run: |
+          git config user.name  "berserk-bot"
+          git config user.email "bot@berserkarch.org"
+          git add x86_64/
+          git commit -m "chore: bump to ${{ steps.check.outputs.upstream }}"
+          git push
+
+      - name: Commit and push source
+        if: steps.check.outputs.changed == 'true'
+        working-directory: source
+        run: |
+          git config user.name  "berserk-bot"
+          git config user.email "bot@berserkarch.org"
+          git add PKGBUILD
+          git commit -m "chore: bump to ${{ steps.check.outputs.upstream }}"
+          git push
