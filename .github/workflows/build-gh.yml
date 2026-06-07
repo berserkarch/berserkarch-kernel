@@ -62,12 +62,14 @@ jobs:
               --pinentry-mode loopback \
               --import
           # pre-cache passphrase in agent
+          echo "test" > /tmp/gpg-test
           echo "$GPG_PASSPHRASE" | \
           gpg --batch --yes \
               --passphrase-fd 0 \
               --pinentry-mode loopback \
               -u E5B40954BD3C98D9BB0F70C805DB3DDFA247469A \
-              --sign /dev/null
+              --sign /tmp/gpg-test
+          rm -f /tmp/gpg-test /tmp/gpg-test.gpg
 
       - name: Update PKGBUILD
         if: steps.check.outputs.changed == 'true'
