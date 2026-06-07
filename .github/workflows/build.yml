@@ -56,16 +56,21 @@ jobs:
         run: |
           # clean stale packages from previous builds
           rm -f source/*.pkg.tar.zst source/*.pkg.tar.zst.sig
+          mkdir -p $HOME/.cache/ccache
           docker run --rm \
             -v "$PWD/source":/build \
+            -v "$HOME/.cache/ccache":/home/builder/.ccache \
             berserkarch/berserkarch:base-devel \
             bash -c "
+              pacman -Syyu --noconfirm && \
+              pacman -S --noconfirm --needed ccache && \
               useradd -m builder && \
               echo 'builder ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/builder && \
-              chown -R builder /build && \
+              chown -R builder /build /home/builder/.ccache && \
               cd /build && \
-              pacman -Syyu --noconfirm && \
-              su builder -c 'makepkg -s --noconfirm --skippgpcheck --cleanbuild'
+              su builder -c 'export CCACHE_DIR=/home/builder/.ccache && \
+                             export PATH=/usr/lib/ccache/bin:\$PATH && \
+                             makepkg -s --noconfirm --skippgpcheck --cleanbuild'
             "
 
       - name: Sign packages
