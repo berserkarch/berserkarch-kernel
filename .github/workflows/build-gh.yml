@@ -149,7 +149,13 @@ jobs:
         run: |
           rm -f mirror/x86_64/*.pkg.tar.zst mirror/x86_64/*.pkg.tar.zst.sig
           cp source/*.pkg.tar.zst source/*.pkg.tar.zst.sig mirror/x86_64/
-          make -C mirror/x86_64
+          docker run --rm             -v "$PWD/mirror/x86_64":/repo             -e GPG_PASSPHRASE="$GPG_PASSPHRASE"             berserkarch/berserkarch:base-devel             bash -c "
+              echo "\$GPG_PASSPHRASE" |               gpg --batch --yes                   --passphrase-fd 0                   --pinentry-mode loopback                   --import /dev/stdin || true
+              echo "test" > /tmp/gpg-test
+              echo "\$GPG_PASSPHRASE" |               gpg --batch --yes                   --passphrase-fd 0                   --pinentry-mode loopback                   -u E5B40954BD3C98D9BB0F70C805DB3DDFA247469A                   --sign /tmp/gpg-test
+              cd /repo && make
+            "
+          sudo chown -R \$USER:\$USER mirror/
 
       - name: Commit and push mirror
         if: steps.check.outputs.changed == 'true'
