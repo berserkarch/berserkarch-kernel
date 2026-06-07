@@ -77,7 +77,6 @@ jobs:
         run: |
           sed -i "s/^pkgver=.*/pkgver=${{ steps.check.outputs.pkgver }}/" PKGBUILD
           sed -i "s/^pkgrel=.*/pkgrel=${{ steps.check.outputs.pkgrel }}/" PKGBUILD
-          updpkgsums
 
       - name: Restore ccache
         if: steps.check.outputs.changed == 'true'
@@ -106,6 +105,7 @@ jobs:
               cd /build && \
               su builder -c 'export CCACHE_DIR=/home/builder/.ccache && \
                              export PATH=/usr/lib/ccache/bin:\$PATH && \
+                             updpkgsums && \
                              makepkg -s --noconfirm --skippgpcheck --cleanbuild'
             "
 
