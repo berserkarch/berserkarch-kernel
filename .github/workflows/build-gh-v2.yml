@@ -1,0 +1,206 @@
+name: Build Berserk Kernel (GitHub Hosted)
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 */6 * * *"
+
+jobs:
+  check-and-build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force
+          df -h
+          nproc
+
+      - name: Setup Git LFS
+        run: |
+          sudo apt-get install -y git-lfs
+          git lfs install
+
+      - name: Checkout source repo
+        uses: actions/checkout@v4
+        with:
+          repository: thehackersbrain/berserk-kernel-v2
+          token: ${{ secrets.BERSERK_KERNEL_PAT }}
+          path: source
+
+      - name: Check upstream CachyOS version
+        id: check
+        run: |
+          # Pull CachyOS PKGBUILD and extract _major, _minor, _tagrel
+          CACHY_PKGBUILD=$(curl -fsSL \
+            "https://raw.githubusercontent.com/CachyOS/linux-cachyos/master/linux-cachyos-bore/PKGBUILD")
+
+          UP_MAJOR=$(echo "$CACHY_PKGBUILD" | awk -F= '/^_major=/{print $2; exit}')
+          UP_MINOR=$(echo "$CACHY_PKGBUILD" | awk -F= '/^_minor=/{gsub(/[^0-9]/,"",$2); print $2; exit}')
+          UP_TAGREL=$(echo "$CACHY_PKGBUILD" | awk -F= '/^_tagrel=/{print $2; exit}')
+          UPSTREAM="${UP_MAJOR}.${UP_MINOR}-${UP_TAGREL}"
+
+          # Read current values from our PKGBUILD
+          CUR_MAJOR=$(awk -F= '/^_major=/{print $2; exit}' source/PKGBUILD)
+          CUR_MINOR=$(awk -F= '/^_minor=/{gsub(/[^0-9]/,"",$2); print $2; exit}' source/PKGBUILD)
+          CUR_TAGREL=$(awk -F= '/^_tagrel=/{print $2; exit}' source/PKGBUILD)
+          CURRENT="${CUR_MAJOR}.${CUR_MINOR}-${CUR_TAGREL}"
+
+          echo "upstream=$UPSTREAM"   >> $GITHUB_OUTPUT
+          echo "current=$CURRENT"     >> $GITHUB_OUTPUT
+          echo "major=$UP_MAJOR"      >> $GITHUB_OUTPUT
+          echo "minor=$UP_MINOR"      >> $GITHUB_OUTPUT
+          echo "tagrel=$UP_TAGREL"    >> $GITHUB_OUTPUT
+          echo "pkgver=${UP_MAJOR}.${UP_MINOR}" >> $GITHUB_OUTPUT
+
+          echo "Upstream: $UPSTREAM"
+          echo "Current:  $CURRENT"
+
+          if [ "$UPSTREAM" != "$CURRENT" ]; then
+            echo "changed=true" >> $GITHUB_OUTPUT
+          else
+            echo "changed=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Checkout mirror repo
+        if: steps.check.outputs.changed == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: berserkarch/berserkarch-kernel
+          token: ${{ secrets.BERSERK_KERNEL_PAT }}
+          path: mirror
+
+      - name: Import GPG key
+        if: steps.check.outputs.changed == 'true'
+        env:
+          GPG_SIGNING_KEY: ${{ secrets.GPG_SIGNING_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          echo "$GPG_SIGNING_KEY" | base64 --decode | \
+          gpg --batch --yes \
+              --passphrase "$GPG_PASSPHRASE" \
+              --pinentry-mode loopback \
+              --import
+          echo "test" > /tmp/gpg-test
+          echo "$GPG_PASSPHRASE" | \
+          gpg --batch --yes \
+              --passphrase-fd 0 \
+              --pinentry-mode loopback \
+              -u E5B40954BD3C98D9BB0F70C805DB3DDFA247469A \
+              --sign /tmp/gpg-test
+          rm -f /tmp/gpg-test /tmp/gpg-test.gpg
+
+      - name: Update PKGBUILD
+        if: steps.check.outputs.changed == 'true'
+        working-directory: source
+        run: |
+          sed -i "s/^_major=.*/_major=${{ steps.check.outputs.major }}/" PKGBUILD
+          sed -i "s/^_minor=.*/_minor=${{ steps.check.outputs.minor }}/" PKGBUILD
+          sed -i "s/^_tagrel=.*/_tagrel=${{ steps.check.outputs.tagrel }}/" PKGBUILD
+          # Reset pkgrel to 1 on upstream bump
+          sed -i "s/^pkgrel=.*/pkgrel=1/" PKGBUILD
+
+      - name: Restore ccache
+        if: steps.check.outputs.changed == 'true'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: ccache-kernel-${{ steps.check.outputs.pkgver }}
+          restore-keys: |
+            ccache-kernel-
+
+      - name: Build in Docker
+        if: steps.check.outputs.changed == 'true'
+        run: |
+          rm -f source/*.pkg.tar.zst source/*.pkg.tar.zst.sig
+          mkdir -p $HOME/.cache/ccache
+          docker run --rm \
+            -v "$PWD/source":/build \
+            -v "$HOME/.cache/ccache":/home/builder/.ccache \
+            berserkarch/berserkarch:base-devel \
+            bash -c "
+              pacman -Syyu --noconfirm && \
+              pacman -S --noconfirm --needed ccache pacman-contrib rust rust-bindgen && \
+              useradd -m builder && \
+              echo 'builder ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/builder && \
+              chown -R builder /build /home/builder/.ccache && \
+              cd /build && \
+              su builder -c 'export CCACHE_DIR=/home/builder/.ccache && \
+                             export PATH=/usr/lib/ccache/bin:\$PATH && \
+                             updpkgsums && \
+                             makepkg -s --noconfirm --skippgpcheck --cleanbuild'
+            "
+
+      - name: Fix package ownership
+        if: steps.check.outputs.changed == 'true'
+        run: sudo chown -R $USER:$USER source/
+
+      - name: Sign packages
+        if: steps.check.outputs.changed == 'true'
+        env:
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          for pkg in source/*.pkg.tar.zst; do
+            echo "$GPG_PASSPHRASE" | \
+            gpg --batch --yes \
+                --passphrase-fd 0 \
+                --pinentry-mode loopback \
+                --detach-sign --no-armor \
+                --default-key E5B40954BD3C98D9BB0F70C805DB3DDFA247469A \
+                "$pkg"
+          done
+
+      - name: Update pacman repo database
+        if: steps.check.outputs.changed == 'true'
+        env:
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+          GPG_SIGNING_KEY: ${{ secrets.GPG_SIGNING_KEY }}
+        run: |
+          rm -f mirror/x86_64/*.pkg.tar.zst mirror/x86_64/*.pkg.tar.zst.sig
+          cp source/*.pkg.tar.zst source/*.pkg.tar.zst.sig mirror/x86_64/
+          echo "$GPG_SIGNING_KEY" | base64 --decode > /tmp/signing-key.gpg
+          docker run --rm \
+            -v "$PWD/mirror/x86_64":/repo \
+            -v "/tmp/signing-key.gpg":/tmp/signing-key.gpg:ro \
+            -e GPG_PASSPHRASE="$GPG_PASSPHRASE" \
+            berserkarch/berserkarch:base-devel \
+            bash -c "
+              gpg --batch --yes \
+                  --passphrase \"\$GPG_PASSPHRASE\" \
+                  --pinentry-mode loopback \
+                  --import /tmp/signing-key.gpg && \
+              echo test > /tmp/gpg-test && \
+              echo \"\$GPG_PASSPHRASE\" | \
+              gpg --batch --yes \
+                  --passphrase-fd 0 \
+                  --pinentry-mode loopback \
+                  -u E5B40954BD3C98D9BB0F70C805DB3DDFA247469A \
+                  --sign /tmp/gpg-test && \
+              cd /repo && make
+            "
+          rm -f /tmp/signing-key.gpg
+          sudo chown -R $USER:$USER mirror/
+
+      - name: Commit and push mirror
+        if: steps.check.outputs.changed == 'true'
+        working-directory: mirror
+        run: |
+          git config user.name  "berserk-bot"
+          git config user.email "bot@berserkarch.org"
+          git add x86_64/
+          git commit -m "chore: bump to ${{ steps.check.outputs.upstream }}"
+          git push
+
+      - name: Commit and push source
+        if: steps.check.outputs.changed == 'true'
+        working-directory: source
+        run: |
+          git config user.name  "berserk-bot"
+          git config user.email "bot@berserkarch.org"
+          git add PKGBUILD
+          git commit -m "chore: bump to ${{ steps.check.outputs.upstream }}"
+          git push
