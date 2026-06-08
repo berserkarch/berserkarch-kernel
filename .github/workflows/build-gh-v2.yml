@@ -1,4 +1,4 @@
-name: Build Berserk Kernel (GitHub Hosted)
+name: Build Berserk Kernel v2
 
 on:
   workflow_dispatch:
