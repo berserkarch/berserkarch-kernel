@@ -66,5 +66,4 @@ jobs:
           rclone copy /tmp/ci-r2-test.txt r2:/${CF_NAME}/x86_64/ --progress
           echo "Verifying upload..."
           rclone ls r2:/${CF_NAME}/x86_64/
-          rclone deletefile r2:/${CF_NAME}/x86_64/ci-r2-test.txt
           echo "Cleanup done"
