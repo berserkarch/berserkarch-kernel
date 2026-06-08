@@ -45,3 +45,26 @@ jobs:
           git push
           git revert HEAD --no-edit
           git push
+
+      - name: Test R2 upload
+        env:
+          CF_AKI: ${{ secrets.CF_AKI }}
+          CF_SAK: ${{ secrets.CF_SAK }}
+          CF_EP: ${{ secrets.CF_EP }}
+          CF_NAME: ${{ secrets.CF_NAME }}
+        run: |
+          curl https://rclone.org/install.sh | sudo bash
+          mkdir -p ~/.config/rclone/
+          cat > ~/.config/rclone/rclone.conf << EOF
+          [r2]
+          type = s3
+          access_key_id = ${CF_AKI}
+          secret_access_key = ${CF_SAK}
+          endpoint = ${CF_EP}
+          EOF
+          echo "ci-test-$(date +%s)" > /tmp/ci-r2-test.txt
+          rclone copy /tmp/ci-r2-test.txt r2:/${CF_NAME}/x86_64/ --progress
+          echo "Verifying upload..."
+          rclone ls r2:/${CF_NAME}/x86_64/
+          rclone deletefile r2:/${CF_NAME}/x86_64/ci-r2-test.txt
+          echo "Cleanup done"
