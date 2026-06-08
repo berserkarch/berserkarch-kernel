@@ -185,6 +185,32 @@ jobs:
           rm -f /tmp/signing-key.gpg
           sudo chown -R $USER:$USER mirror/
 
+      - name: Upload to R2
+        if: steps.check.outputs.changed == 'true'
+        env:
+          CF_AKI: ${{ secrets.CF_AKI }}
+          CF_SAK: ${{ secrets.CF_SAK }}
+          CF_EP: ${{ secrets.CF_EP }}
+          CF_NAME: ${{ secrets.CF_NAME }}
+        run: |
+          curl https://rclone.org/install.sh | sudo bash
+          mkdir -p ~/.config/rclone/
+          cat > ~/.config/rclone/rclone.conf << RCLONE
+          [r2]
+          type = s3
+          access_key_id = ${CF_AKI}
+          secret_access_key = ${CF_SAK}
+          endpoint = ${CF_EP}
+          RCLONE
+          rclone copy \
+            mirror/x86_64/berserkarch-kernel.db \
+            mirror/x86_64/berserkarch-kernel.db.sig \
+            mirror/x86_64/berserkarch-kernel.files \
+            mirror/x86_64/berserkarch-kernel.files.sig \
+            r2:/${CF_NAME}/x86_64/ --progress
+          rclone copy source/*.pkg.tar.zst source/*.pkg.tar.zst.sig \
+            r2:/${CF_NAME}/x86_64/ --progress
+
       - name: Commit and push mirror
         if: steps.check.outputs.changed == 'true'
         working-directory: mirror
