@@ -200,7 +200,7 @@ jobs:
           echo "access_key_id = ${CF_AKI}" >> ~/.config/rclone/rclone.conf
           echo "secret_access_key = ${CF_SAK}" >> ~/.config/rclone/rclone.conf
           echo "endpoint = ${CF_EP}" >> ~/.config/rclone/rclone.conf
-          rclone copy mirror/x86_64/ r2:/${CF_NAME}/x86_64/ --progress
+          rclone sync mirror/x86_64/ r2:/${CF_NAME}/x86_64/ --progress
 
       - name: Commit and push mirror
         if: steps.check.outputs.changed == 'true'
